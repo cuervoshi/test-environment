@@ -19,6 +19,8 @@ services:
       LEDGER_PUBLIC_KEY: ${LEDGER_PUBLIC_KEY}
       LNDCONNECT_URI: ${LNDCONNECT_URI}
       NODE_PUBKEY: ${NODE_PUBKEY}
+      ACCEPTED_BASE_FEE: ${ACCEPTED_BASE_FEE}
+      ACCEPTED_FEE_PERCENT: ${ACCEPTED_FEE_PERCENT}
     depends_on:
       urlx-cache:
         condition: service_started
