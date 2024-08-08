@@ -3,10 +3,9 @@ services:
   api-gateway:
     build: https://github.com/lawalletio/api-gateway.git
     image: lawallet/api-gateway
-    container_name: api-gateway
     restart: always
     ports:
-      - 3000:3000
+      - ${API_GATEWAY_PORTS}
     healthcheck:
       test: ["CMD-SHELL", "wget http://localhost:3000/health -q -O - > /dev/null"]
       interval: 5s
@@ -22,6 +21,7 @@ services:
       NOSTR_WRITE_RELAY: ws://nostream:8008
       URLX_URI: http://urlx:3000
       CARD_URI: http://card:3000
+      MASSACRE_URI: http://halving-massacre:3000
       MONITOR_URI: http://monitor:3000
       LEDGER_PUBLIC_KEY: ${LEDGER_PUBLIC_KEY}
       MINTER_PUBLIC_KEY: ${URLX_PUBLIC_KEY}

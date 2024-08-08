@@ -4,16 +4,81 @@ set -eu;
 
 export LC_ALL=C;
 
+b_flag=0
+t_flag=0
+LW_PROJECT_NAME='lawallet'
+
+print_usage() {
+    echo "prod: Start up a lawallet stack for production";
+    echo "Usage: prod [-b] [-h] [-t project_name]";
+    echo "\t-b: build images before creating containers";
+    echo "\t-h: print this help message and exit";
+    echo "\t-t project_name: name to use for the containers";
+    echo "Examples:";
+    echo "\t./prod"
+    echo "\t./prod -t tmp_env"
+}
+
+while getopts "bht:" flag; do
+    case "${flag}" in
+        b) b_flag=1;;
+        h) print_usage
+            exit 0;;
+        t)  t_flag=1
+            LW_PROJECT_NAME="${OPTARG}";;
+        *) print_usage
+            exit 1;
+    esac
+done;
+
+export LW_PROJECT_NAME="${LW_PROJECT_NAME}";
+
+if [ ${t_flag} -eq 0 ]; then
+    export API_GATEWAY_PORTS='3000:3000';
+    export CARD_PORTS='3001:3000';
+    export URLX_PORTS='3002:3000';
+    export MONITOR_PORTS='3003:3000';
+    export NOSTREAM_PORTS='8008:8008';
+    export LEDGER_DB_PORTS='5432:5432';
+    export URLX_CACHE_PORTS='6379:6379';
+else
+    export API_GATEWAY_PORTS='3000';
+    export CARD_PORTS='3000';
+    export URLX_PORTS='3000';
+    export MONITOR_PORTS='3000';
+    export NOSTREAM_PORTS='8008';
+    export LEDGER_DB_PORTS='5432';
+    export URLX_CACHE_PORTS='6379';
+fi;
+
 #######################################################################################################################
 
 HERE="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)";
 
-export API_GATEWAY_DOCKER_BASE="${HERE}/api-gateway";
-export CARD_DOCKER_BASE="${HERE}/card";
-export LEDGER_DOCKER_BASE="${HERE}/ledger";
-export MONITOR_DOCKER_BASE="${HERE}/monitor";
-export NOSTREAM_DOCKER_BASE="${HERE}/nostream";
-export URLX_DOCKER_BASE="${HERE}/urlx";
+config_dir="/.${LW_PROJECT_NAME}"
+
+cp_conf() {
+    from="$1"
+    to="$2"
+    if [ ! -d "${to}" ]; then
+        cp -r "${from}" /tmp/lawallet_tmp_dir && mv /tmp/lawallet_tmp_dir "${to}"
+    else
+        echo "Found config in ${to} not copying from template"
+    fi;
+}
+
+export API_GATEWAY_DOCKER_BASE="${HERE}/api-gateway${config_dir}";
+cp_conf "${HERE}/api-gateway" "${API_GATEWAY_DOCKER_BASE}"
+export CARD_DOCKER_BASE="${HERE}/card${config_dir}";
+cp_conf "${HERE}/card" "${CARD_DOCKER_BASE}"
+export LEDGER_DOCKER_BASE="${HERE}/ledger${config_dir}";
+cp_conf "${HERE}/ledger" "${LEDGER_DOCKER_BASE}"
+export MONITOR_DOCKER_BASE="${HERE}/monitor${config_dir}";
+cp_conf "${HERE}/monitor" "${MONITOR_DOCKER_BASE}"
+export NOSTREAM_DOCKER_BASE="${HERE}/nostream${config_dir}";
+cp_conf "${HERE}/nostream" "${NOSTREAM_DOCKER_BASE}"
+export URLX_DOCKER_BASE="${HERE}/urlx${config_dir}";
+cp_conf "${HERE}/urlx" "${URLX_DOCKER_BASE}"
 
 #######################################################################################################################
 
@@ -22,77 +87,96 @@ generate_secret() {
 }
 
 generate_key_pair() {
-    key_data="$(openssl ecparam -name secp256k1 -genkey | openssl ec -text -noout -conv_form=compressed 2> /dev/null | grep '^ ')";
+    key_data="$(openssl ecparam -name secp256k1 -genkey | openssl ec -text -noout -conv_form compressed 2> /dev/null | grep '^ ')";
 
     priv_key="$(echo "${key_data}" | head -n3 | tr -cd 0123456789abcdef)";
     pub_key="$(echo "${key_data}" | tail -n3 | tr -cd 0123456789abcdef | tail -c+3)";
 
-    echo "${priv_key}:${pub_key}";
+    echo "$(echo -n $priv_key | tail -c 64):${pub_key}";
 }
 
 #######################################################################################################################
 
-if [ ! -f "${HERE}/.env" ]; then
-    cp "${HERE}/.env.example.dev" "${HERE}/.env";
+if [ ${t_flag} -eq 0 ]; then
+    env_file="${HERE}/.env";
+else
+    env_file="${HERE}/.env.${LW_PROJECT_NAME}";
+fi
+
+if [ ! -f "${env_file}" ]; then
+    cp "${HERE}/.env.example.dev" "${env_file}";
+    nostream_secret="$(generate_secret)";
+    sed -i -e "s/NOSTREAM_SECRET=''/NOSTREAM_SECRET='${nostream_secret}'/g" "${env_file}";
+
+    ledger_key_pair="$(generate_key_pair)";
+    ledger_pub_key="${ledger_key_pair#*:}";
+    ledger_priv_key="${ledger_key_pair%:*}";
+    sed -i -e "s/LEDGER_PRIVATE_KEY=''/LEDGER_PRIVATE_KEY='${ledger_priv_key}'/g" "${env_file}";
+    sed -i -e "s/LEDGER_PUBLIC_KEY=''/LEDGER_PUBLIC_KEY='${ledger_pub_key}'/g" "${env_file}";
+
+    urlx_key_pair="$(generate_key_pair)";
+    urlx_pub_key="${urlx_key_pair#*:}";
+    urlx_priv_key="${urlx_key_pair%:*}";
+    sed -i -e "s/URLX_PRIVATE_KEY=''/URLX_PRIVATE_KEY='${urlx_priv_key}'/g" "${env_file}";
+    sed -i -e "s/URLX_PUBLIC_KEY=''/URLX_PUBLIC_KEY='${urlx_pub_key}'/g" "${env_file}";
+
+    card_key_pair="$(generate_key_pair)";
+    card_pub_key="${card_key_pair#*:}";
+    card_priv_key="${card_key_pair%:*}";
+    sed -i -e "s/CARD_PRIVATE_KEY=''/CARD_PRIVATE_KEY='${card_priv_key}'/g" "${env_file}";
+    sed -i -e "s/CARD_PUBLIC_KEY=''/CARD_PUBLIC_KEY='${card_pub_key}'/g" "${env_file}";
 else
     echo ".env file found, skipping.";
 fi;
 
-COMPOSE_PARALLEL_LIMIT=1 docker compose     \
-    -f "${HERE}/docker-compose.yaml"        \
-    -f "${HERE}/lnbits/docker-compose.yaml" \
-    -f "${HERE}/proxy/docker-compose.yaml"  \
-    build;
+if [ ${b_flag} -ne 0 ]; then
+    COMPOSE_PARALLEL_LIMIT=1 docker compose     \
+        -f "${HERE}/docker-compose.yaml"        \
+        build;
+fi;
 
 #######################################################################################################################
 
-nostream_secret="$(generate_secret)";
-sed -i -e "s/NOSTREAM_SECRET=''/NOSTREAM_SECRET='${nostream_secret}'/g" "${HERE}/.env";
-
-ledger_key_pair="$(generate_key_pair)";
-ledger_pub_key="${ledger_key_pair#*:}";
-ledger_priv_key="${ledger_key_pair%:*}";
-sed -i -e "s/LEDGER_PRIVATE_KEY=''/LEDGER_PRIVATE_KEY='${ledger_priv_key}'/g" "${HERE}/.env";
-sed -i -e "s/LEDGER_PUBLIC_KEY=''/LEDGER_PUBLIC_KEY='${ledger_pub_key}'/g" "${HERE}/.env";
-
-urlx_key_pair="$(generate_key_pair)";
-urlx_pub_key="${urlx_key_pair#*:}";
-urlx_priv_key="${urlx_key_pair%:*}";
-sed -i -e "s/URLX_PRIVATE_KEY=''/URLX_PRIVATE_KEY='${urlx_priv_key}'/g" "${HERE}/.env";
-sed -i -e "s/URLX_PUBLIC_KEY=''/URLX_PUBLIC_KEY='${urlx_pub_key}'/g" "${HERE}/.env";
-
-card_key_pair="$(generate_key_pair)";
-card_pub_key="${card_key_pair#*:}";
-card_priv_key="${card_key_pair%:*}";
-sed -i -e "s/CARD_PRIVATE_KEY=''/CARD_PRIVATE_KEY='${card_priv_key}'/g" "${HERE}/.env";
-sed -i -e "s/CARD_PUBLIC_KEY=''/CARD_PUBLIC_KEY='${card_pub_key}'/g" "${HERE}/.env";
-
-#######################################################################################################################
-
-if [ ! -f "${HERE}/nostream/.nostr/settings.yaml" ]; then
-    cp "${HERE}/nostream/.nostr/settings.example.yaml" "${HERE}/nostream/.nostr/settings.yaml";
+if [ ! -f "${NOSTREAM_DOCKER_BASE}/.nostr/settings.yaml" ]; then
+    cp "${NOSTREAM_DOCKER_BASE}/.nostr/settings.example.yaml" "${NOSTREAM_DOCKER_BASE}/.nostr/settings.yaml";
 else
-    echo "nostream/.nostr/settings.yaml file found, skipping.";
+    echo "${NOSTREAM_DOCKER_BASE}/.nostr/settings.yaml file found, skipping.";
 fi;
 
 #######################################################################################################################
 
-if ! docker network ls --format '{{.Name}}' | grep -q '^lawallet$'; then
-    docker network create --subnet '10.10.10.0/24' --gateway '10.10.10.1' lawallet;
+if [ ${t_flag} -eq 0 ]; then
+    if ! docker network ls --format '{{.Name}}' | grep -q "^${LW_PROJECT_NAME}$"; then
+        docker network create --subnet '10.10.10.0/24' --gateway '10.10.10.1' "${LW_PROJECT_NAME}";
+    fi;
+else
+    if ! docker network ls --format '{{.Name}}' | grep -q "^${LW_PROJECT_NAME}$"; then
+        docker network create "${LW_PROJECT_NAME}";
+    fi;
 fi;
 
 #######################################################################################################################
 
-TRAPS="docker compose stop; ${TRAPS}";
+if [ ${t_flag} -eq 0 ]; then
+    seed_file="${HERE}/.seeded";
+else
+    seed_file="${HERE}/.seeded.${LW_PROJECT_NAME}";
+fi
 
-if [ ! -f "${HERE}/.seeded" ]; then
-    touch "${HERE}/.seeded";
+if [ ! -f "${seed_file}" ]; then
+    touch "${seed_file}";
     docker compose                              \
         --profile seed                          \
+        --project-name "${LW_PROJECT_NAME}"     \
+        --env-file "${env_file}"                \
         -f "${HERE}/docker-compose.yaml"        \
-        up;
+        -f "${HERE}/docker-compose.override.yaml" \
+        up -d;
 else
-    docker compose                              \
-        -f "${HERE}/docker-compose.yaml"        \
-        up;
+    docker compose                                   \
+        --project-name "${LW_PROJECT_NAME}"     \
+        --env-file "${env_file}"                     \
+        -f "${HERE}/docker-compose.yaml"             \
+        -f "${HERE}/docker-compose.override.yaml"    \
+        up -d;
 fi;
